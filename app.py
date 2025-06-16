@@ -7,9 +7,9 @@ import sys
 from io import StringIO
 
 # --- Configuração da Página e Título ---
-st.set_page_config(page_title="Analisador de Planilhas com IA", page_icon="🤖", layout="wide")
-st.title("🤖 Analisador de Planilhas com IA")
-st.caption(f"Hoje é {pd.Timestamp.now(tz='America/Sao_Paulo').strftime('%A, %d de %B de %Y')}")
+st.set_page_config(page_title="Analisador de Dados com IA", page_icon="🤖", layout="wide")
+st.title("🤖 Analisador de Dados com IA")
+st.caption("Carregue sua planilha e faça perguntas para obter respostas conclusivas.")
 
 # --- Configuração da API Key e do Modelo ---
 # Para DEPLOY: A chave será lida dos Segredos do Streamlit (st.secrets)
@@ -19,15 +19,17 @@ st.caption(f"Hoje é {pd.Timestamp.now(tz='America/Sao_Paulo').strftime('%A, %d 
 try:
     # Tenta obter a chave do ambiente de deploy do Streamlit
     GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
-except FileNotFoundError:
+except (FileNotFoundError, KeyError):
     # Se não encontrar, assume que estamos rodando localmente
-    st.warning("Chave de API não encontrada nos Segredos. Verifique sua configuração local.")
-    # Se você definiu a chave manualmente acima, o código continuará.
+    st.warning("Chave de API não encontrada nos Segredos. Verifique sua configuração local caso o app não funcione.")
 
+# Configura o genai apenas se a chave estiver disponível
 if 'GOOGLE_API_KEY' in locals() or 'GOOGLE_API_KEY' in st.secrets:
-    genai.configure(api_key=st.secrets.get("GOOGLE_API_KEY", locals().get("GOOGLE_API_KEY")))
+    api_key = st.secrets.get("GOOGLE_API_KEY", locals().get("GOOGLE_API_KEY"))
+    genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-1.5-flash')
-
+else:
+    model = None
 
 # --- Inicialização do Estado da Sessão (A "MEMÓRIA" DO APP) ---
 if "messages" not in st.session_state:
@@ -35,11 +37,7 @@ if "messages" not in st.session_state:
 if "df" not in st.session_state:
     st.session_state.df = None
 if "chat" not in st.session_state:
-    # Inicia o chat com o modelo se a chave API estiver disponível
-    if 'GOOGLE_API_KEY' in locals() or 'GOOGLE_API_KEY' in st.secrets:
-        st.session_state.chat = model.start_chat(history=[])
-    else:
-        st.session_state.chat = None
+    st.session_state.chat = model.start_chat(history=[]) if model else None
 
 # --- Barra Lateral (Sidebar) para Upload ---
 with st.sidebar:
@@ -53,6 +51,11 @@ with st.sidebar:
             else:
                 st.session_state.df = pd.read_csv(uploaded_file)
             
+            # Limpa o histórico de chat ao carregar um novo arquivo
+            st.session_state.messages = []
+            if model:
+                st.session_state.chat = model.start_chat(history=[])
+
             st.success("Arquivo carregado!")
             st.dataframe(st.session_state.df.head(), height=220)
         except Exception as e:
@@ -76,19 +79,29 @@ if st.session_state.df is not None:
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Prepara a resposta do assistente
+        # Prepara e envia o prompt para a IA
         with st.chat_message("assistant"):
-            with st.spinner("Analisando e pensando..."):
-                # Prepara um prompt mais completo para a IA, dando o contexto
+            with st.spinner("Analisando os dados e preparando sua resposta..."):
+                
+                # NOVO PROMPT MELHORADO
+                # Envia uma amostra dos dados e instruções claras para a IA
+                df_sample = st.session_state.df.head().to_csv(index=False)
+                
                 full_prompt = f"""
-                Contexto: Você é um assistente de análise de dados. O usuário carregou uma planilha.
-                As colunas são: {', '.join(st.session_state.df.columns)}.
-                O DataFrame completo está disponível para você como `df`.
+                Você é um assistente de análise de dados sênior. Sua tarefa é analisar a planilha do usuário e responder de forma direta e conclusiva.
 
-                Pergunta do usuário: "{prompt}"
+                **Contexto dos Dados:**
+                O usuário carregou uma planilha. Aqui estão as primeiras linhas para seu contexto:
+                ```csv
+                {df_sample}
+                ```
 
-                Sua tarefa é responder à pergunta do usuário. Se a pergunta exigir uma operação com os dados (soma, média, filtro, etc.),
-                mentalmente gere o código pandas para encontrar a resposta e então me diga o resultado em linguagem natural e amigável.
+                **Instruções Críticas:**
+                1.  **Seja Conclusivo:** Aja como se você já tivesse executado toda a análise necessária nos dados completos.
+                2.  **NÃO descreva o processo:** Não explique o código Pandas que você usaria. Não diga "Para descobrir isso, eu faria...".
+                3.  **Forneça a Resposta Final:** Vá direto ao ponto e entregue a informação que o usuário pediu. Se a pergunta for "Qual o produto mais vendido?", sua resposta deve começar com "O produto mais vendido é...".
+
+                **Pergunta do Usuário:** "{prompt}"
                 """
                 
                 # Envia a pergunta para o chat e obtém a resposta
@@ -103,4 +116,6 @@ if st.session_state.df is not None:
         # Adiciona a resposta do assistente ao histórico
         st.session_state.messages.append({"role": "assistant", "content": response_text})
 else:
+    if not model:
+        st.error("A API Key do Google não foi configurada. Por favor, adicione-a nos Segredos do Streamlit para o app funcionar.")
     st.info("Por favor, carregue uma planilha na barra lateral para começar a análise.")
